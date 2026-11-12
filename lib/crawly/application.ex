@@ -20,6 +20,7 @@ defmodule Crawly.Application do
         {DynamicSupervisor, strategy: :one_for_one, name: Crawly.EngineSup},
         {Crawly.DataStorage, []},
         {Crawly.RequestsStorage, []},
+        {Crawly.BatchCommitter, []},
         {DynamicSupervisor,
          strategy: :one_for_one, name: Crawly.RequestsStorage.WorkersSup},
         {DynamicSupervisor,

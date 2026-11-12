@@ -32,6 +32,24 @@ defmodule Crawly.DataStorage.Worker do
   end
 
   @doc """
+  Store a batch of items atomically.
+
+  Items are piped through the item pipelines in a strict mode: a crashing
+  pipeline aborts the whole batch with an `{:error, reason}` tuple and the
+  worker state is left untouched. When all items are piped successfully,
+  the new state (including the stored items count) becomes visible at
+  once.
+  """
+  @spec store_batch(pid(), [map()]) :: :ok | {:error, term()}
+  def store_batch(pid, items) do
+    GenServer.call(pid, {:store_batch, items})
+  catch
+    error, reason ->
+      Logger.error(Exception.format(error, reason, __STACKTRACE__))
+      {:error, {error, reason}}
+  end
+
+  @doc """
   Inspect the inner state of the given data worker
   """
   @spec inspect(pid, atom()) :: term()
@@ -60,6 +78,19 @@ defmodule Crawly.DataStorage.Worker do
     {:noreply, state}
   end
 
+  def handle_call({:store_batch, items}, _from, state) do
+    pipelines = Crawly.Utils.get_settings(:pipelines, state.spider_name, [])
+
+    case pipe_batch(pipelines, items, state) do
+      {:ok, new_state, stored} ->
+        {:reply, :ok,
+         %Worker{new_state | stored_items: state.stored_items + stored}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:inspect, field}, _from, state) do
     msg = {:inspect, Map.get(state, field, nil)}
     {:reply, msg, state}
@@ -67,5 +98,32 @@ defmodule Crawly.DataStorage.Worker do
 
   def handle_call(:stats, _from, state) do
     {:reply, {:stored_items, state.stored_items}, state}
+  end
+
+  # Pipe the whole batch of items through the pipelines strictly: a
+  # crashing pipeline aborts the batch, so the caller can drop the batch
+  # without making any part of it visible.
+  defp pipe_batch(pipelines, items, state) do
+    Enum.reduce_while(items, {:ok, state, 0}, fn item,
+                                                 {:ok, acc_state, stored} ->
+      try do
+        case Crawly.Utils.strict_pipe(pipelines, item, acc_state) do
+          {false, new_state} ->
+            {:cont, {:ok, new_state, stored}}
+
+          {new_item, new_state} ->
+            Logger.debug("Stored item: #{inspect(new_item)}")
+            {:cont, {:ok, new_state, stored + 1}}
+        end
+      catch
+        error, reason ->
+          Logger.error(
+            "Pipeline crash while storing a batch, the batch is aborted: " <>
+              Exception.format(error, reason, __STACKTRACE__)
+          )
+
+          {:halt, {:error, {error, reason}}}
+      end
+    end)
   end
 end

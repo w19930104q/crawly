@@ -28,19 +28,16 @@ defmodule Crawly.Fetchers.Splash do
              client_options: [binary()],
              response: Crawly.Response.t()
   def fetch(request, client_options) do
-    {base_url, other_options} =
-      case Keyword.pop(client_options, :base_url, nil) do
-        nil ->
-          throw(
-            "The base_url is not set. Splash fetcher can't be used! " <>
-              "Please set :base_url in fetcher options to continue. " <>
-              "For example: " <>
-              "fetcher: {Crawly.Fetchers.Splash, [base_url: <url>]}"
-          )
+    {base_url, other_options} = Keyword.pop(client_options, :base_url, nil)
 
-        {base_url, other_options} ->
-          {base_url, other_options}
-      end
+    if base_url == nil do
+      throw(
+        "The base_url is not set. Splash fetcher can't be used! " <>
+          "Please set :base_url in fetcher options to continue. " <>
+          "For example: " <>
+          "fetcher: {Crawly.Fetchers.Splash, [base_url: <url>]}"
+      )
+    end
 
     query_parameters =
       URI.encode_query(Keyword.put(other_options, :url, request.url))

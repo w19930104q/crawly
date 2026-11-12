@@ -75,24 +75,11 @@ defmodule Crawly.Utils do
   def pipe(_, false, state), do: {false, state}
 
   def pipe([pipeline | pipelines], item, state) do
-    {module, args} =
-      case pipeline do
-        {module, args} ->
-          {module, args}
-
-        {module} ->
-          {module, nil}
-
-        module ->
-          {module, nil}
-      end
+    {module, args} = unwrap_pipeline(pipeline)
 
     {new_item, new_state} =
       try do
-        case args do
-          nil -> module.run(item, state)
-          _ -> module.run(item, state, args)
-        end
+        run_pipeline(module, args, item, state)
       catch
         error, reason ->
           call =
@@ -113,6 +100,40 @@ defmodule Crawly.Utils do
 
     pipe(pipelines, new_item, new_state)
   end
+
+  @doc """
+  Strict variant of `pipe/3`.
+
+  Behaves exactly like `pipe/3`, except that a pipeline crash is not
+  logged and skipped — it is propagated to the caller. Used by batch
+  commit paths (`Crawly.DataStorage.Worker.store_batch/2`), where a
+  crashing pipeline must fail the whole batch instead of being silently
+  skipped.
+  """
+  @spec strict_pipe(pipelines, item, state) :: result
+        when pipelines: [Crawly.Pipeline.t()],
+             item: map(),
+             state: map(),
+             result: {new_item | false, new_state},
+             new_item: map(),
+             new_state: map()
+  def strict_pipe([], item, state), do: {item, state}
+  def strict_pipe(_, false, state), do: {false, state}
+
+  def strict_pipe([pipeline | pipelines], item, state) do
+    {module, args} = unwrap_pipeline(pipeline)
+    {new_item, new_state} = run_pipeline(module, args, item, state)
+    strict_pipe(pipelines, new_item, new_state)
+  end
+
+  defp unwrap_pipeline({module, args}), do: {module, args}
+  defp unwrap_pipeline({module}), do: {module, nil}
+  defp unwrap_pipeline(module), do: {module, nil}
+
+  defp run_pipeline(module, nil, item, state), do: module.run(item, state)
+
+  defp run_pipeline(module, args, item, state),
+    do: module.run(item, state, args)
 
   @doc """
   A wrapper over Process.send after

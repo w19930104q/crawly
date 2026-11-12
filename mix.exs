@@ -85,6 +85,7 @@ defmodule Crawly.Mixfile do
           Crawly.Engine,
           Crawly.Manager,
           Crawly.Worker,
+          Crawly.BatchCommitter,
           Crawly.DataStorage,
           Crawly.DataStorage.Worker,
           Crawly.RequestsStorage,

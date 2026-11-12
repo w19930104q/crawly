@@ -239,6 +239,11 @@ defmodule WorkerTest do
     setup do
       :meck.expect(Crawly.Utils, :send_after, fn _, _, _ -> :ignore end)
 
+      # Batches are deduplicated by {spider, crawl_id, response, attempt},
+      # and the tests below share all of these. Start every test with a
+      # clean commit log.
+      :ok = Crawly.BatchCommitter.reset()
+
       :meck.expect(Crawly.RequestsStorage, :pop, fn TestSpider ->
         Crawly.Utils.request_from_url("https://www.example.com")
       end)
@@ -288,12 +293,19 @@ defmodule WorkerTest do
         [parsers: [Worker.TestParser]]
       end)
 
-      :meck.expect(Crawly.RequestsStorage, :store, fn _spider_name, _request ->
-        :ignore
+      :meck.expect(Crawly.RequestsStorage, :prepare, fn _spider_name, _count ->
+        :ok
       end)
 
-      :meck.expect(Crawly.DataStorage, :store, fn _spider_name, _item ->
-        :ignore
+      :meck.expect(Crawly.RequestsStorage, :store_batch, fn _spider_name,
+                                                            _requests ->
+        :ok
+      end)
+
+      :meck.expect(Crawly.DataStorage, :prepare, fn _spider_name -> :ok end)
+
+      :meck.expect(Crawly.DataStorage, :store_batch, fn _spider_name, _items ->
+        :ok
       end)
 
       Crawly.Worker.handle_info(:work, %{
@@ -301,9 +313,9 @@ defmodule WorkerTest do
         backoff: 10_000
       })
 
-      assert :meck.called(Crawly.DataStorage, :store, [TestSpider, :_])
+      assert :meck.called(Crawly.DataStorage, :store_batch, [TestSpider, :_])
 
-      assert :meck.called(Crawly.RequestsStorage, :store, [
+      assert :meck.called(Crawly.RequestsStorage, :store_batch, [
                TestSpider,
                :_
              ])

@@ -36,6 +36,17 @@ defmodule Crawly.RequestsStorage.Worker do
   end
 
   @doc """
+  Check that the worker can accept `count` more requests.
+
+  The capacity is limited by the `:requests_storage_max_size` setting
+  (`:infinity` by default).
+  """
+  @spec prepare(pid(), non_neg_integer()) :: :ok | {:error, :queue_full}
+  def prepare(pid, count) do
+    do_call(pid, {:prepare, count})
+  end
+
+  @doc """
   Get statistics from the requests storage
   """
   @spec stats(pid()) :: {:stored_requests, non_neg_integer()}
@@ -67,6 +78,30 @@ defmodule Crawly.RequestsStorage.Worker do
   def handle_call({:store, requests}, _from, state) do
     new_state = Enum.reduce(requests, state, &pipe_request/2)
     {:reply, :ok, new_state}
+  end
+
+  # Check that the given amount of requests would fit into the storage
+  def handle_call({:prepare, count}, _from, state) do
+    max_size =
+      Crawly.Utils.get_settings(
+        :requests_storage_max_size,
+        state.spider_name,
+        :infinity
+      )
+
+    reply =
+      case max_size do
+        :infinity ->
+          :ok
+
+        max_size when is_integer(max_size) ->
+          case state.count + count <= max_size do
+            true -> :ok
+            false -> {:error, :queue_full}
+          end
+      end
+
+    {:reply, reply, state}
   end
 
   # Get current request from the storage

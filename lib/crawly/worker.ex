@@ -34,6 +34,7 @@ defmodule Crawly.Worker do
 
   def handle_info(:work, state) do
     %{spider_name: spider_name, backoff: backoff} = state
+    crawl_id = Map.get(state, :crawl_id)
 
     # Get a request from requests storage.
     new_backoff =
@@ -47,7 +48,8 @@ defmodule Crawly.Worker do
 
           with {:ok, response} <- get_response({request, spider_name}),
                {:ok, parsed_item} <- parse_item(response),
-               {:ok, :done} <- process_parsed_item(parsed_item) do
+               {:ok, :done} <-
+                 process_parsed_item(parsed_item, request, crawl_id) do
             :ok
           else
             {:error, reason} ->
@@ -152,27 +154,58 @@ defmodule Crawly.Worker do
     end
   end
 
-  @spec process_parsed_item({parsed_item, response, spider_name}) :: result
+  @spec process_parsed_item(
+          {parsed_item, response, spider_name},
+          request,
+          crawl_id
+        ) ::
+          result
         when spider_name: atom(),
              response: HTTPoison.Response.t(),
+             request: Crawly.Request.t(),
+             crawl_id: term(),
              parsed_item: Crawly.ParsedItem.t(),
-             result: {:ok, :done}
-  defp process_parsed_item({parsed_item, response, spider_name}) do
+             result: {:ok, :done} | {:error, term()}
+  defp process_parsed_item(
+         {parsed_item, response, spider_name},
+         request,
+         crawl_id
+       ) do
     requests = Map.get(parsed_item, :requests) || []
     items = Map.get(parsed_item, :items) || []
-    # Process all requests one by one
-    Enum.each(
-      requests,
-      fn request ->
-        request = Map.put(request, :prev_response, response)
-        Crawly.RequestsStorage.store(spider_name, request)
-      end
-    )
 
-    # Process all items one by one
-    Enum.each(items, &Crawly.DataStorage.store(spider_name, &1))
+    requests = Enum.map(requests, &Map.put(&1, :prev_response, response))
 
-    {:ok, :done}
+    # The batch is identified by the response and the attempt which
+    # produced it, so a re-delivered response for the same attempt is
+    # detected as a duplicate and is not committed again.
+    batch_id = {request.url, request.retries, response_fingerprint(response)}
+
+    case Crawly.BatchCommitter.commit(
+           spider_name,
+           crawl_id,
+           batch_id,
+           requests,
+           items
+         ) do
+      :accepted ->
+        {:ok, :done}
+
+      :duplicate ->
+        Logger.debug(
+          "Batch for #{request.url} (attempt #{request.retries}) was " <>
+            "already committed, skipping the duplicate"
+        )
+
+        {:ok, :done}
+
+      {:failed, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp response_fingerprint(response) do
+    :erlang.phash2({Map.get(response, :status_code), Map.get(response, :body)})
   end
 
   ## Retry a request if max retries allows to do so

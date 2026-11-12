@@ -38,6 +38,32 @@ defmodule Crawly.DataStorage do
     GenServer.call(__MODULE__, {:store, spider, item})
   end
 
+  @doc """
+  Store a batch of items atomically.
+
+  All items are run through the item pipelines of the spider in a strict
+  mode: a crashing pipeline aborts the whole batch and leaves the storage
+  state untouched, so a failed batch never leaves half of its items
+  behind. Used by `Crawly.BatchCommitter`.
+  """
+  @spec store_batch(atom(), [map()]) ::
+          :ok | {:error, :data_storage_worker_not_running | term()}
+  def store_batch(spider, items) do
+    GenServer.call(__MODULE__, {:store_batch, spider, items})
+  end
+
+  @doc """
+  Check that the storage for a given spider is ready to accept items.
+
+  Returns `:ok` when the storage worker is running, otherwise
+  `{:error, :data_storage_worker_not_running}`. Used by
+  `Crawly.BatchCommitter` to validate a batch before committing it.
+  """
+  @spec prepare(atom()) :: :ok | {:error, :data_storage_worker_not_running}
+  def prepare(spider) do
+    GenServer.call(__MODULE__, {:prepare, spider})
+  end
+
   def stats(spider) do
     GenServer.call(__MODULE__, {:stats, spider})
   end
@@ -68,6 +94,31 @@ defmodule Crawly.DataStorage do
 
         pid ->
           Crawly.DataStorage.Worker.store(pid, item)
+      end
+
+    {:reply, message, state}
+  end
+
+  def handle_call({:store_batch, spider, items}, _from, state) do
+    %{workers: workers} = state
+
+    message =
+      case Map.get(workers, spider) do
+        nil ->
+          {:error, :data_storage_worker_not_running}
+
+        pid ->
+          Crawly.DataStorage.Worker.store_batch(pid, items)
+      end
+
+    {:reply, message, state}
+  end
+
+  def handle_call({:prepare, spider}, _from, state) do
+    message =
+      case Map.get(state.workers, spider) do
+        nil -> {:error, :data_storage_worker_not_running}
+        _pid -> :ok
       end
 
     {:reply, message, state}

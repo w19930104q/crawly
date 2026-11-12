@@ -54,6 +54,36 @@ defmodule Crawly.RequestsStorage do
   end
 
   @doc """
+  Store a batch of requests in a single atomic call.
+
+  Unlike `store/2`, which splits big batches into chunks, the whole list is
+  stored with one call, so the batch either is stored as a whole or not at
+  all. Used by `Crawly.BatchCommitter`.
+  """
+  @spec store_batch(Crawly.spider(), [Crawly.Request.t()]) ::
+          :ok | {:error, :storage_worker_not_running}
+  def store_batch(spider_name, requests) when is_list(requests) do
+    GenServer.call(__MODULE__, {:store, {spider_name, requests}})
+  end
+
+  @doc """
+  Check that the storage for a given spider can accept `count` more
+  requests.
+
+  Returns `:ok` when the storage worker is running and has enough capacity
+  left (see the `:requests_storage_max_size` setting, `:infinity` by
+  default). Returns `{:error, :queue_full}` when the batch would not fit,
+  and `{:error, :storage_worker_not_running}` when there is no worker for
+  the spider. Used by `Crawly.BatchCommitter` to validate a batch before
+  committing it.
+  """
+  @spec prepare(Crawly.spider(), non_neg_integer()) ::
+          :ok | {:error, :queue_full | :storage_worker_not_running}
+  def prepare(spider_name, count \\ 1) do
+    GenServer.call(__MODULE__, {:prepare, spider_name, count})
+  end
+
+  @doc """
   Pop a request out of requests storage
   """
   @spec pop(Crawly.spider()) ::
@@ -105,6 +135,19 @@ defmodule Crawly.RequestsStorage do
 
         pid ->
           Crawly.RequestsStorage.Worker.store(pid, requests)
+      end
+
+    {:reply, msg, state}
+  end
+
+  def handle_call({:prepare, spider_name, count}, _from, state) do
+    msg =
+      case Map.get(state.workers, spider_name) do
+        nil ->
+          {:error, :storage_worker_not_running}
+
+        pid ->
+          Crawly.RequestsStorage.Worker.prepare(pid, count)
       end
 
     {:reply, msg, state}
